@@ -1236,6 +1236,7 @@ FW_VERSIONS = {
   CAR.INSIGHT: {
     (Ecu.eps, 0x18da30f1, None): [
       b'39990-TXM-A040\x00\x00',
+      b'39990-TXM,A040\x00\x00', # for modded eps
     ],
     (Ecu.fwdRadar, 0x18dab0f1, None): [
       b'36802-TXM-A070\x00\x00',
