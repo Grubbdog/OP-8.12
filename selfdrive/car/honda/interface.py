@@ -119,9 +119,9 @@ class CarInterface(CarInterfaceBase):
 
     # default longitudinal tuning for all hondas
     ret.longitudinalTuning.kpBP = [0., 5., 35.]
-    ret.longitudinalTuning.kpV = [1.2, 0.8, 0.5]
+    ret.longitudinalTuning.kpV = [0.2, 0.2, 0.1]
     ret.longitudinalTuning.kiBP = [0., 35.]
-    ret.longitudinalTuning.kiV = [0.18, 0.12]
+    ret.longitudinalTuning.kiV = [0.05, 0.025]
 
     eps_modified = False
     for fw in car_fw:
@@ -393,8 +393,8 @@ class CarInterface(CarInterfaceBase):
                                                                          tire_stiffness_factor=tire_stiffness_factor)
 
     if candidate in HONDA_BOSCH:
-      ret.gasMaxBP = [0., 2.7, 5.5, 11.1, 36.1] #6, 12, 25, 60, 80 mph stolen from Hyundai
-      ret.gasMaxV = [0.375, 0.305, 0.255, 0.175, 0.125] #tuned on a civic hatchback
+      ret.gasMaxBP = [0.]
+      ret.gasMaxV = [0.4]
       ret.brakeMaxBP = [0.]  # m/s
       ret.brakeMaxV = [1.]   # max brake allowed, 3.5m/s^2
     else:
