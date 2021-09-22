@@ -25,11 +25,14 @@
 #include "selfdrive/common/timing.h"
 #include "selfdrive/common/util.h"
 
+// leeco actuator (DW9800W H-Bridge Driver IC)
+// from sniff
+//const uint16_t INFINITY_DAC = 364;
 
 extern ExitHandler do_exit;
 
 static int cam_ioctl(int fd, unsigned long int request, void *arg, const char *log_msg = nullptr) {
-  int err = ioctl(fd, request, arg);
+  int err = HANDLE_EINTR(ioctl(fd, request, arg));
   if (err != 0 && log_msg) {
     LOG(util::string_format("%s: %d", log_msg, err).c_str());
   }
@@ -187,13 +190,10 @@ static int imx179_s5k3p8sp_apply_exposure(CameraState *s, int gain, int integ_li
     // global_gain
     {0x204, (uint16_t)(gain >> 8), 0}, {0x205, (uint16_t)(gain & 0xff),0},
 
+    // REG_HOLD
     {0x104,0x0,0},
   };
-  int err = sensor_write_regs(s, reg_array, std::size(reg_array), MSM_CAMERA_I2C_BYTE_DATA);
-  if (err != 0) {
-    LOGE("apply_exposure err %d", err);
-  }
-  return err;
+  return sensor_write_regs(s, reg_array, std::size(reg_array), MSM_CAMERA_I2C_BYTE_DATA);
 }
 
 static void camera_init(VisionIpcServer *v, CameraState *s, int camera_id, int camera_num,
@@ -213,6 +213,13 @@ static void camera_init(VisionIpcServer *v, CameraState *s, int camera_id, int c
   s->frame_length = s->pixel_clock / line_length_pclk / s->fps;
   s->self_recover = 0;
 
+  if (camera_id == CAMERA_ID_IMX298) {
+    s->apply_exposure = imx298_apply_exposure;
+  } else if (camera_id == CAMERA_ID_S5K3P8SP || camera_id == CAMERA_ID_IMX179) {
+    s->apply_exposure = imx179_s5k3p8sp_apply_exposure;
+  } else {
+    s->apply_exposure = ov8865_apply_exposure;
+  }
   s->buf.init(device_id, ctx, s, v, FRAME_BUF_COUNT, rgb_type, yuv_type, camera_release_buffer);
 }
 
@@ -399,7 +406,7 @@ static void do_autoexposure(CameraState *s, float grey_frac) {
 
 static uint8_t* get_eeprom(int eeprom_fd, size_t *out_len) {
   msm_eeprom_cfg_data cfg = {.cfgtype = CFG_EEPROM_GET_CAL_DATA};
-  int err = ioctl(eeprom_fd, VIDIOC_MSM_EEPROM_CFG, &cfg);
+  int err = cam_ioctl(eeprom_fd, VIDIOC_MSM_EEPROM_CFG, &cfg, "get_eeprom begin");
   assert(err >= 0);
 
   uint32_t num_bytes = cfg.cfg.get_data.num_bytes;
@@ -412,7 +419,7 @@ static uint8_t* get_eeprom(int eeprom_fd, size_t *out_len) {
   cfg.cfgtype = CFG_EEPROM_READ_CAL_DATA;
   cfg.cfg.read_data.num_bytes = num_bytes;
   cfg.cfg.read_data.dbuffer = buffer;
-  err = ioctl(eeprom_fd, VIDIOC_MSM_EEPROM_CFG, &cfg);
+  err = cam_ioctl(eeprom_fd, VIDIOC_MSM_EEPROM_CFG, &cfg, "get_eeprom end");
   assert(err >= 0);
 
   *out_len = num_bytes;
@@ -460,7 +467,6 @@ static void imx298_ois_calibration(int ois_fd, uint8_t* eeprom) {
     {0x847f, 0x0c0c}, //_M_EQCTL
   };
 
-
   struct msm_camera_i2c_seq_reg_array ois_reg_settings[std::size(ois_registers)] = {{0}};
   for (int i=0; i<std::size(ois_registers); i++) {
     ois_reg_settings[i].reg_addr = ois_registers[i][0];
@@ -483,9 +489,9 @@ static void sensors_init(MultiCameraState *s) {
 
   unique_fd sensorinit_fd;
   if (s->device == DEVICE_LP3) {
-    sensorinit_fd = open("/dev/v4l-subdev11", O_RDWR | O_NONBLOCK);
+    sensorinit_fd = HANDLE_EINTR(open("/dev/v4l-subdev11", O_RDWR | O_NONBLOCK));
   } else {
-    sensorinit_fd = open("/dev/v4l-subdev12", O_RDWR | O_NONBLOCK);
+    sensorinit_fd = (open("/dev/v4l-subdev12", O_RDWR | O_NONBLOCK));
   }
   assert(sensorinit_fd >= 0);
 
@@ -570,10 +576,12 @@ static void sensors_init(MultiCameraState *s) {
       .output_format = MSM_SENSOR_BAYER,
     };
   }
-  slave_info.power_setting_array.power_setting = &slave_info.power_setting_array.power_setting_a[0];
-  slave_info.power_setting_array.power_down_setting = &slave_info.power_setting_array.power_down_setting_a[0];
+  slave_info.power_setting_array.power_setting =
+    (struct msm_sensor_power_setting *)&slave_info.power_setting_array.power_setting_a[0];
+  slave_info.power_setting_array.power_down_setting =
+    (struct msm_sensor_power_setting *)&slave_info.power_setting_array.power_down_setting_a[0];
   sensor_init_cfg_data sensor_init_cfg = {.cfgtype = CFG_SINIT_PROBE, .cfg.setting = &slave_info};
-  err = cam_ioctl(sensorinit_fd, VIDIOC_MSM_SENSOR_INIT_CFG, &sensor_init_cfg, "sensor init cfg (road camera)");
+  err = cam_ioctl(sensorinit_fd, VIDIOC_MSM_SENSOR_INIT_CFG, &sensor_init_cfg, "sensor init cfg (road)");
   assert(err >= 0);
 
   struct msm_camera_sensor_slave_info slave_info2 = {0};
@@ -682,22 +690,14 @@ static void sensors_init(MultiCameraState *s) {
       .output_format = MSM_SENSOR_BAYER,
     };
   }
-  slave_info2.power_setting_array.power_setting = &slave_info2.power_setting_array.power_setting_a[0];
-  slave_info2.power_setting_array.power_down_setting = &slave_info2.power_setting_array.power_down_setting_a[0];
+  slave_info2.power_setting_array.power_setting =
+    (struct msm_sensor_power_setting *)&slave_info2.power_setting_array.power_setting_a[0];
+  slave_info2.power_setting_array.power_down_setting =
+    (struct msm_sensor_power_setting *)&slave_info2.power_setting_array.power_down_setting_a[0];
   sensor_init_cfg.cfgtype = CFG_SINIT_PROBE;
   sensor_init_cfg.cfg.setting = &slave_info2;
-  err = cam_ioctl(sensorinit_fd, VIDIOC_MSM_SENSOR_INIT_CFG, &sensor_init_cfg, "sensor init cfg (driver camera)");
+  err = cam_ioctl(sensorinit_fd, VIDIOC_MSM_SENSOR_INIT_CFG, &sensor_init_cfg, "sensor init cfg (driver)");
   assert(err >= 0);
-
-  unique_fd sensorinit_fd = HANDLE_EINTR(open("/dev/v4l-subdev11", O_RDWR | O_NONBLOCK));
-  assert(sensorinit_fd >= 0);
-  for (auto &info : slave_infos) {
-    info.power_setting_array.power_setting = &info.power_setting_array.power_setting_a[0];
-    info.power_setting_array.power_down_setting = &info.power_setting_array.power_down_setting_a[0];
-    sensor_init_cfg_data sensor_init_cfg = {.cfgtype = CFG_SINIT_PROBE, .cfg.setting = &info};
-    int err = cam_ioctl(sensorinit_fd, VIDIOC_MSM_SENSOR_INIT_CFG, &sensor_init_cfg, "sensor init cfg");
-    assert(err >= 0);
-  }
 }
 
 static void camera_open(CameraState *s, bool is_road_cam) {
@@ -722,18 +722,19 @@ static void camera_open(CameraState *s, bool is_road_cam) {
       sensor_dev = "/dev/v4l-subdev18";
     }
     if (s->device == DEVICE_LP3) {
-      s->isp_fd = open("/dev/v4l-subdev13", O_RDWR | O_NONBLOCK);
+      s->isp_fd = HANDLE_EINTR(open("/dev/v4l-subdev13", O_RDWR | O_NONBLOCK));
     } else {
-      s->isp_fd = open("/dev/v4l-subdev14", O_RDWR | O_NONBLOCK);
+      s->isp_fd = HANDLE_EINTR(open("/dev/v4l-subdev14", O_RDWR | O_NONBLOCK));
     }
     assert(s->isp_fd >= 0);
-    s->eeprom_fd = open("/dev/v4l-subdev8", O_RDWR | O_NONBLOCK);
+    s->eeprom_fd = HANDLE_EINTR(open("/dev/v4l-subdev8", O_RDWR | O_NONBLOCK));
     assert(s->eeprom_fd >= 0);
-    s->actuator_fd = open("/dev/v4l-subdev7", O_RDWR | O_NONBLOCK);
+
+    s->actuator_fd = HANDLE_EINTR(open("/dev/v4l-subdev7", O_RDWR | O_NONBLOCK));
     assert(s->actuator_fd >= 0);
 
     if (s->device != DEVICE_LP3) {
-      s->ois_fd = open("/dev/v4l-subdev10", O_RDWR | O_NONBLOCK);
+      s->ois_fd = HANDLE_EINTR(open("/dev/v4l-subdev10", O_RDWR | O_NONBLOCK));
       assert(s->ois_fd >= 0);
     }
   } else {
@@ -782,15 +783,15 @@ static void camera_open(CameraState *s, bool is_road_cam) {
   struct sensorb_cfg_data sensorb_cfg_data = {.cfgtype = CFG_POWER_DOWN};
   cam_ioctl(s->sensor_fd, VIDIOC_MSM_SENSOR_CFG, &sensorb_cfg_data, "sensor power down");
 
+  // actuator powerdown
+  actuator_cfg_data.cfgtype = CFG_ACTUATOR_POWERDOWN;
+  cam_ioctl(s->actuator_fd, VIDIOC_MSM_ACTUATOR_CFG, &actuator_cfg_data, "actuator powerdown");
+
   if (is_road_cam && s->device != DEVICE_LP3) {
     // ois powerdown
     ois_cfg_data.cfgtype = CFG_OIS_POWERDOWN;
     err = cam_ioctl(s->ois_fd, VIDIOC_MSM_OIS_CFG, &ois_cfg_data, "ois powerdown");
   }
-
-  // actuator powerdown
-  actuator_cfg_data.cfgtype = CFG_ACTUATOR_POWERDOWN;
-  cam_ioctl(s->actuator_fd, VIDIOC_MSM_ACTUATOR_CFG, &actuator_cfg_data, "actuator powerdown");
 
   // reset isp
   // struct msm_vfe_axi_halt_cmd halt_cmd = {
@@ -818,12 +819,6 @@ static void camera_open(CameraState *s, bool is_road_cam) {
   LOG("******************** GO GO GO ************************");
 
   s->eeprom = get_eeprom(s->eeprom_fd, &s->eeprom_size);
-
-  // printf("eeprom:\n");
-  // for (int i=0; i<s->eeprom_size; i++) {
-  //   printf("%02x", s->eeprom[i]);
-  // }
-  // printf("\n");
 
   // CSID: init csid
   csid_cfg_data.cfgtype = CSID_INIT;
@@ -872,7 +867,6 @@ static void camera_open(CameraState *s, bool is_road_cam) {
 
     actuator_cfg_data.cfgtype = CFG_ACTUATOR_INIT;
     cam_ioctl(s->actuator_fd, VIDIOC_MSM_ACTUATOR_CFG, &actuator_cfg_data, "actuator init");
-
 
     // no OIS in LP3
     if (s->device != DEVICE_LP3) {
@@ -948,7 +942,7 @@ static void camera_open(CameraState *s, bool is_road_cam) {
         // .i2c_data_type = wtf
         .settings = &ois_init_settings[0],
       };
-      err = cam_ioctl(s->ois_fd, VIDIOC_MSM_OIS_CFG, &ois_cfg_data, "ois init settings");
+      cam_ioctl(s->ois_fd, VIDIOC_MSM_OIS_CFG, &ois_cfg_data, "ois init settings");
     } else {
       // leeco actuator (DW9800W H-Bridge Driver IC)
       // from sniff
@@ -1003,8 +997,7 @@ static void camera_open(CameraState *s, bool is_road_cam) {
         },
       };
 
-      err = cam_ioctl(s->actuator_fd, VIDIOC_MSM_ACTUATOR_CFG, &actuator_cfg_data, "actuator set info");
-      LOG("actuator set info: %d", err);
+      cam_ioctl(s->actuator_fd, VIDIOC_MSM_ACTUATOR_CFG, &actuator_cfg_data, "actuator set info");
     }
   }
 
@@ -1151,7 +1144,6 @@ static void camera_open(CameraState *s, bool is_road_cam) {
   cam_ioctl(s->isp_fd, VIDIOC_MSM_ISP_CFG_STREAM, &s->stream_cfg, "isp start stream");
 }
 
-
 static struct damping_params_t actuator_ringing_params = {
   .damping_step = 1023,
   .damping_delay = 15000,
@@ -1162,12 +1154,10 @@ static void road_camera_start(CameraState *s) {
   struct msm_actuator_cfg_data actuator_cfg_data = {0};
 
   set_exposure(s, 1.0, 1.0);
+  int inf_step;
 
   int err = sensor_write_regs(s, start_reg_array, std::size(start_reg_array), MSM_CAMERA_I2C_BYTE_DATA);
   LOG("sensor start regs: %d", err);
-
-  // focus on infinity assuming phone is perpendicular
-  int inf_step;
 
   if (s->device != DEVICE_LP3) {
     imx298_ois_calibration(s->ois_fd, s->eeprom);
@@ -1181,6 +1171,7 @@ static void road_camera_start(CameraState *s) {
     actuator_ringing_params.damping_delay = 20000;
     actuator_ringing_params.hw_params = 13;
 
+    // focus on infinity assuming phone is perpendicular
     inf_step = 512 - s->infinity_dac;
 
     // initial guess
@@ -1244,7 +1235,6 @@ void actuator_move(CameraState *s, uint16_t target) {
 
   s->cur_step_pos = dest_step_pos;
   s->cur_lens_pos = actuator_cfg_data.cfg.move.curr_lens_pos;
-
   //LOGD("step %d   target: %d  lens pos: %d", dest_step_pos, target, s->cur_lens_pos);
 }
 
@@ -1311,9 +1301,8 @@ static std::optional<float> get_accel_z(SubMaster *sm) {
 }
 
 static void do_autofocus(CameraState *s, SubMaster *sm) {
-  // params for focus PI controller
-  const int dac_up = s->device == DEVICE_LP3? LP3_AF_DAC_UP:OP3T_AF_DAC_UP;
-  const int dac_down = s->device == DEVICE_LP3? LP3_AF_DAC_DOWN:OP3T_AF_DAC_DOWN;
+  const int dac_down = s->device == DEVICE_LP3 ? LP3_AF_DAC_DOWN : OP3T_AF_DAC_DOWN;
+  const int dac_up = s->device == DEVICE_LP3 ? LP3_AF_DAC_UP : OP3T_AF_DAC_UP;
 
   float lens_true_pos = s->lens_true_pos.load();
   if (!isnan(s->focus_err)) {
@@ -1384,9 +1373,9 @@ void cameras_open(MultiCameraState *s) {
   assert(s->v4l_fd >= 0);
 
   if (s->device == DEVICE_LP3) {
-    s->ispif_fd = open("/dev/v4l-subdev15", O_RDWR | O_NONBLOCK);
+    s->ispif_fd = HANDLE_EINTR(open("/dev/v4l-subdev15", O_RDWR | O_NONBLOCK));
   } else {
-    s->ispif_fd = open("/dev/v4l-subdev16", O_RDWR | O_NONBLOCK);
+    s->ispif_fd = HANDLE_EINTR(open("/dev/v4l-subdev16", O_RDWR | O_NONBLOCK));
   }
   assert(s->ispif_fd >= 0);
 
@@ -1448,7 +1437,6 @@ static void camera_close(CameraState *s) {
       cam_ioctl(s->isp_fd, VIDIOC_MSM_ISP_RELEASE_STREAM, &stream_release, "isp release stream");
     }
   }
-
   free(s->eeprom);
 }
 
@@ -1663,3 +1651,4 @@ void cameras_close(MultiCameraState *s) {
   delete s->sm;
   delete s->pm;
 }
+
