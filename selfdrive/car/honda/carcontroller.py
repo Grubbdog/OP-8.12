@@ -176,7 +176,7 @@ class CarController():
     starting = actuators.longControlState == LongCtrlState.starting
 
     # Prevent rolling backwards
-    accel = -4.0 if stopping else accel
+    #accel = -4.0 if stopping else accel
 
     # wind brake from air resistance decel at high speed
     wind_brake = interp(CS.out.vEgo, [0.0, 2.3, 35.0], [0.001, 0.002, 0.15])
