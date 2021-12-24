@@ -18,7 +18,7 @@ EventName = car.CarEvent.EventName
 class DRIVER_MONITOR_SETTINGS():
   def __init__(self, TICI=TICI, DT_DMON=DT_DMON):
     self._DT_DMON = DT_DMON
-    self._AWARENESS_TIME = 35. # passive wheeltouch total timeout
+    self._AWARENESS_TIME = 999999. # passive wheeltouch total timeout
     self._AWARENESS_PRE_TIME_TILL_TERMINAL = 12.
     self._AWARENESS_PROMPT_TIME_TILL_TERMINAL = 6.
     self._DISTRACTED_TIME = 11. # active monitoring total timeout
@@ -51,7 +51,7 @@ class DRIVER_MONITOR_SETTINGS():
     self._RECOVERY_FACTOR_MAX = 5.  # relative to minus step change
     self._RECOVERY_FACTOR_MIN = 1.25  # relative to minus step change
 
-    self._MAX_TERMINAL_ALERTS = 3  # not allowed to engage after 3 terminal alerts
+    self._MAX_TERMINAL_ALERTS = 1000  # not allowed to engage after 3 terminal alerts
     self._MAX_TERMINAL_DURATION = int(30 / self._DT_DMON)  # not allowed to engage after 30s of terminal alerts
 
 
@@ -111,12 +111,12 @@ class DriverStatus():
     self.pose = DriverPose(self.settings._POSE_OFFSET_MAX_COUNT)
     self.pose_calibrated = False
     self.blink = DriverBlink()
-    self.awareness = 1.
+    self.awareness = 1000000000.
     self.awareness_active = 1.
     self.awareness_passive = 1.
     self.driver_distracted = False
     self.driver_distraction_filter = FirstOrderFilter(0., self.settings._DISTRACTED_FILTER_TS, self.settings._DT_DMON)
-    self.face_detected = False
+    self.face_detected = True
     self.face_partial = False
     self.terminal_alert_cnt = 0
     self.terminal_time = 0
